@@ -1,0 +1,390 @@
+rm(list=ls(all=TRUE))
+require(coda)
+require(MASS)
+require(parallel)
+require(doParallel)
+
+
+############ Declarando as variaveis e alguns parametros ##############
+old  =  options(digits=20)
+
+nini<-10
+nmax<-120
+jumpn<-10
+NN<-(nmax-nini)/jumpn +1
+
+
+FF <- function(k){
+jumpn<-10
+n<-k*jumpn+10
+palpha <- 1       # Parametro c para gerar valores na GG
+pbet <- 3       # Parametro bet >2
+B <- 10000        # Qtd de estimativas que serão calculados
+lim<-50
+cc<-qnorm(0.975,0,1)
+##Parametros Bayesiano###
+R<-5500         #Numero de iteracoes
+burnin<-500
+jump<-5
+set.seed(2020)
+ES<-4
+######### tamanho das matrizes que armazenarao estimativas######
+mrealpha <- matrix(nrow=NN,ncol=ES)
+msealpha <- matrix(nrow=NN,ncol=ES)
+cobalpha <- matrix(nrow=NN,ncol=ES)
+mrebet <- matrix(nrow=NN,ncol=ES)
+msebet <- matrix(nrow=NN,ncol=ES)
+cobbet <- matrix(nrow=NN,ncol=ES)
+
+
+
+fisher <- function(W,H){
+  F <- matrix(nrow = 2,ncol = 2)
+  F[1,1] <-  W
+  F[1,2] <- 1-(1+trigamma(W)-W*trigamma(W))*W
+  F[2,1] <- F[1,2]
+  F[2,2] <- (4*W-2*W^2-1)*trigamma(W)+(W-2*W^2+W^3)*(trigamma(W))^2+W-2
+  return(F)
+}
+
+#######Jeffreys Prior ########
+posterior1W <- function (W) {
+p<-lgamma(n*W)-n*lgamma(W) +0.5*log(W*trigamma(W)-1)+(W)*sum(log(t))-(n*W)*log(sum(t))
+return(p) }   
+
+posterior2W <- function (H,W) {
+delta<-exp(W+lgamma(W)+(1-W)*digamma(W)-H)
+p<-n*W*log(delta)-delta*sum(t)
+return(p) }   
+
+#######Reference Prior ########
+posterior1W2 <- function (W) {
+p<-lgamma(n*W)-n*lgamma(W) +0.5*log(trigamma(W))+(W)*sum(log(t))-(n*W)*log(sum(t))
+return(p) }   
+
+posterior2W2<- function (H,W) {
+delta<-exp(W+lgamma(W)+(1-W)*digamma(W)-H)
+p<-n*W*log(delta)-delta*sum(t)
+return(p) }  
+
+#######Reference Prior 2########
+posterior1W3 <- function (W) {
+p<-lgamma(n*W)-n*lgamma(W) +0.5*log(W*trigamma(W)-1)-0.5*log(W)+(W)*sum(log(t))-(n*W)*log(sum(t))
+return(p) }   
+
+posterior2W3 <- function (H,W) {
+delta<-exp(W+lgamma(W)+(1-W)*digamma(W)-H)
+p<-n*W*log(delta)-delta*sum(t)
+return(p) }          
+
+
+#######Tibshirani ########
+posterior1W4 <- function (W) {
+p<-lgamma(n*W)-n*lgamma(W) +log(W*trigamma(W)-1)-0.5*log(W)+(W)*sum(log(t))-(n*W)*log(sum(t))
+return(p) }   
+
+posterior2W4 <- function (H,W) {
+delta<-exp(W+lgamma(W)+(1-W)*digamma(W)-H)
+p<-n*W*log(delta)-delta*sum(t)
+return(p) }  
+
+emv <- matrix(nrow=B,ncol=2)
+emcmc1 <- matrix(nrow=B,ncol=2)
+emcmc2 <- matrix(nrow=B,ncol=2)
+emcmc3 <- matrix(nrow=B,ncol=2)
+emcmc4 <- matrix(nrow=B,ncol=2)
+pc1<-rep(0,times=B)
+pc2<-rep(0,times=B)
+pb11<-rep(0,times=B)
+pb12<-rep(0,times=B)
+pb21<-rep(0,times=B)
+pb22<-rep(0,times=B)
+pb31<-rep(0,times=B)
+pb32<-rep(0,times=B)
+pb41<-rep(0,times=B)
+pb42<-rep(0,times=B)
+o<-0           # Contador de iterações
+ite<-0         # Contador de iterações
+
+################## Calculando #######################
+### Comando try() faz com que mesmo que o programa encontre erro ele não pare de executar ###
+while(o<B)
+ {
+ t<-rgamma(n,palpha,pbet)
+ b<-1.3#Valor Auxiliar MCMC
+se<-0.2
+vH<-length(R+1)
+vW<-length(R+1)
+vH[1]<-palpha-log(pbet)+lgamma(palpha)+(1-palpha)*digamma(palpha)
+vW[1]<-palpha  #Valores Iniciais
+
+#Verdadeiro
+pH<-palpha-log(pbet)+lgamma(palpha)+(1-palpha)*digamma(palpha)
+pW<-palpha
+
+#MLE
+mlealpha<-coef(fitdistr(t,"gamma"))[1]
+mlebeta<-coef(fitdistr(t,"gamma"))[2]
+
+emvW<-mlealpha
+emvH<-mlealpha-log(mlebeta)+lgamma(mlealpha)+(1-mlealpha)*digamma(mlealpha)
+
+c1<-rep(0,times=R)    #Contador de valores aceitos
+c2<-rep(0,times=R)    #Contador de valores aceitos
+ccaux<-0
+## Realizando o M-H hibrido
+a1<-0; i<-1; c10<-0
+try(
+while (i<=R) {
+if(i<1) i<-2
+prop1<-rgamma(1,shape=b*vW[i],rate=b)
+ratio1<-posterior1W(prop1)-posterior1W(vW[i])+dgamma(vW[i],shape=b*prop1,rate=b,log=TRUE)-dgamma(prop1,shape=b*vW[i],rate=b,log=TRUE)
+has<-min(1,exp(ratio1)); u1<-runif(1)
+if (is.finite(has)) {
+if (u1<has) {vW[i+1]<-prop1 ; c1[i]<-0} else {vW[i+1]<-vW[i] ; c1[i]<-1}
+  } else {vW[i+1]<-vW[i] ; a1<-a1+1; c1[i]<-1}
+prop2<- rnorm(1,vH[i],se)
+ratio2<-posterior2W(prop2,vW[i+1])-posterior2W(vH[i],vW[i+1]) +dnorm(vH[i], mean=prop2, sd=se, log = TRUE)-dnorm(prop2, mean=vH[i], sd=se, log = TRUE)
+has<-min(1,exp(ratio2)); u2<-runif(1)
+if (u2<has & is.double(has)) {vH[i+1]<-prop2 ; c2[i]<-0 ; a1<-0 } else {vH[i+1]<-vH[i] ; a1<-a1+1; c2[i]<-1}
+if(a1==40) {i<-i-50; a1=0}
+i<-i+1 ; c10<-c10+1
+if(c10==50000) {i=R+1; vH<-rep(0,times=R); vW<-rep(0,times=R)}
+}
+)
+    try(vvW<-vW[seq(burnin,R,jump)])
+    try(vvH<- vH[seq(burnin,R,jump)])
+    if(is.double(vvW))
+    if(sum(vvW)!=0){
+    old  =  options(digits=5)
+    ace1<- (1-sum(c1)/length(c1))
+    ge1<-abs(geweke.diag(vvW)$z[1])
+    ge2<-abs(geweke.diag(vvH)$z[1])
+    prai1<-quantile(vvW, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    pras1<-quantile(vvW, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    prli1<-quantile(vvH, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    prls1<-quantile(vvH, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    auxW1<-mean(vvW); auxH1<-mean(vvH); 
+    if (ace1>=0.1 & ace1<=0.7 & auxH1<lim & auxW1<lim & ge1<1.96  & ge2<1.96) {
+############################Calculando a segunda posteriori ############################
+########################################################################################
+vH<-length(R+1)
+vW<-length(R+1)
+vH<-length(R+1)
+vW<-length(R+1)
+vH[1]<-palpha-log(pbet)+lgamma(palpha)+(1-palpha)*digamma(palpha)
+vW[1]<-palpha  #Valores Iniciais
+c1<-rep(0,times=R)    #Contador de valores aceitos
+c2<-rep(0,times=R)    #Contador de valores aceitos
+ccaux<-0
+## Realizando o M-H hibrido
+a1<-0; i<-1; c10<-0
+try(
+while (i<=R) {
+if(i<1) i<-2
+prop1<-rgamma(1,shape=b*vW[i],rate=b)
+ratio1<-posterior1W2(prop1)-posterior1W2(vW[i])+dgamma(vW[i],shape=b*prop1,rate=b,log=TRUE)-dgamma(prop1,shape=b*vW[i],rate=b,log=TRUE)
+has<-min(1,exp(ratio1)); u1<-runif(1)
+if (is.finite(has)) {
+if (u1<has) {vW[i+1]<-prop1 ; c1[i]<-0} else {vW[i+1]<-vW[i] ; c1[i]<-1}
+  } else {vW[i+1]<-vW[i] ; a1<-a1+1; c1[i]<-1}
+prop2<- rnorm(1,vH[i],se)
+ratio2<-posterior2W2(prop2,vW[i+1])-posterior2W2(vH[i],vW[i+1]) +dnorm(vH[i], mean=prop2, sd=se, log = TRUE)-dnorm(prop2, mean=vH[i], sd=se, log = TRUE)
+has<-min(1,exp(ratio2)); u2<-runif(1)
+if (u2<has & is.double(has)) {vH[i+1]<-prop2 ; c2[i]<-0 ; a1<-0 } else {vH[i+1]<-vH[i] ; a1<-a1+1; c2[i]<-1}
+if(a1==40) {i<-i-50; a1=0}
+i<-i+1 ; c10<-c10+1
+if(c10==50000) {i=R+1; vH<-rep(0,times=R); vW<-rep(0,times=R)}
+}
+)
+    try(vvW<-vW[seq(burnin,R,jump)])
+    try(vvH<- vH[seq(burnin,R,jump)])
+    if(is.double(vvW))
+    if(sum(vvW)!=0){
+    old  =  options(digits=5)
+    ace1<- (1-sum(c1)/length(c1))
+    ge1<-abs(geweke.diag(vvW)$z[1])
+    ge2<-abs(geweke.diag(vvH)$z[1])
+    prai2<-quantile(vvW, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    pras2<-quantile(vvW, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    prli2<-quantile(vvH, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    prls2<-quantile(vvH, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    auxW2<-mean(vvW); auxH2<-mean(vvH); 
+if (ace1>=0.1 & ace1<=0.7 & auxH2<lim & auxW2<lim & ge1<1.96  & ge2<1.96) {  
+############################Calculando a terceira posteriori ############################
+########################################################################################
+vH<-length(R+1)
+vW<-length(R+1)
+vH[1]<-palpha-log(pbet)+lgamma(palpha)+(1-palpha)*digamma(palpha)
+vW[1]<-palpha  #Valores Iniciais
+c1<-rep(0,times=R)    #Contador de valores aceitos
+c2<-rep(0,times=R)    #Contador de valores aceitos
+ccaux<-0
+## Realizando o M-H hibrido
+a1<-0; i<-1; c10<-0
+try(
+while (i<=R) {
+if(i<1) i<-2
+prop1<-rgamma(1,shape=b*vW[i],rate=b)
+ratio1<-posterior1W3(prop1)-posterior1W3(vW[i])+dgamma(vW[i],shape=b*prop1,rate=b,log=TRUE)-dgamma(prop1,shape=b*vW[i],rate=b,log=TRUE)
+has<-min(1,exp(ratio1)); u1<-runif(1)
+if (is.finite(has)) {
+if (u1<has) {vW[i+1]<-prop1 ; c1[i]<-0} else {vW[i+1]<-vW[i] ; c1[i]<-1}
+  } else {vW[i+1]<-vW[i] ; a1<-a1+1; c1[i]<-1}
+prop2<- rnorm(1,vH[i],se)
+ratio2<-posterior2W3(prop2,vW[i+1])-posterior2W3(vH[i],vW[i+1]) +dnorm(vH[i], mean=prop2, sd=se, log = TRUE)-dnorm(prop2, mean=vH[i], sd=se, log = TRUE)
+has<-min(1,exp(ratio2)); u2<-runif(1)
+if (u2<has & is.double(has)) {vH[i+1]<-prop2 ; c2[i]<-0 ; a1<-0 } else {vH[i+1]<-vH[i] ; a1<-a1+1; c2[i]<-1}
+if(a1==40) {i<-i-50; a1=0}
+i<-i+1 ; c10<-c10+1
+if(c10==50000) {i=R+1; vH<-rep(0,times=R); vW<-rep(0,times=R)}
+}
+)
+    try(vvW<-vW[seq(burnin,R,jump)])
+    try(vvH<- vH[seq(burnin,R,jump)])
+    if(is.double(vvW))
+    if(sum(vvW)!=0){
+    old  =  options(digits=5)
+    ace1<- (1-sum(c1)/length(c1))
+    atc1<- mean(acf(vvW,plot=F)$acf)
+    atc2<- mean(acf(vvH,plot=F)$acf)
+    ge1<-abs(geweke.diag(vvW)$z[1])
+    ge2<-abs(geweke.diag(vvH)$z[1])
+    prai3<-quantile(vvW, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    pras3<-quantile(vvW, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    prli3<-quantile(vvH, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    prls3<-quantile(vvH, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    auxW3<-mean(vvW); auxH3<-mean(vvH); 
+if (ace1>=0.1 & ace1<=0.7 & auxH3<lim & auxW3<lim & ge1<1.96  & ge2<1.96) {
+############################Calculando a quarta posteriori ############################
+########################################################################################
+vH<-length(R+1)
+vW<-length(R+1)
+vH[1]<-palpha-log(pbet)+lgamma(palpha)+(1-palpha)*digamma(palpha)
+vW[1]<-palpha  #Valores Iniciais
+c1<-rep(0,times=R)    #Contador de valores aceitos
+c2<-rep(0,times=R)    #Contador de valores aceitos
+ccaux<-0
+## Realizando o M-H hibrido
+a1<-0; i<-1; c10<-0
+try(
+while (i<=R) {
+if(i<1) i<-2
+prop1<-rgamma(1,shape=b*vW[i],rate=b)
+ratio1<-posterior1W4(prop1)-posterior1W4(vW[i])+dgamma(vW[i],shape=b*prop1,rate=b,log=TRUE)-dgamma(prop1,shape=b*vW[i],rate=b,log=TRUE)
+has<-min(1,exp(ratio1)); u1<-runif(1)
+if (is.finite(has)) {
+if (u1<has) {vW[i+1]<-prop1 ; c1[i]<-0} else {vW[i+1]<-vW[i] ; c1[i]<-1}
+  } else {vW[i+1]<-vW[i] ; a1<-a1+1; c1[i]<-1}
+prop2<- rnorm(1,vH[i],se)
+ratio2<-posterior2W4(prop2,vW[i+1])-posterior2W4(vH[i],vW[i+1]) +dnorm(vH[i], mean=prop2, sd=se, log = TRUE)-dnorm(prop2, mean=vH[i], sd=se, log = TRUE)
+has<-min(1,exp(ratio2)); u2<-runif(1)
+if (u2<has & is.double(has)) {vH[i+1]<-prop2 ; c2[i]<-0 ; a1<-0 } else {vH[i+1]<-vH[i] ; a1<-a1+1; c2[i]<-1}
+if(a1==40) {i<-i-50; a1=0}
+i<-i+1 ; c10<-c10+1
+if(c10==50000) {i=R+1; vH<-rep(0,times=R); vW<-rep(0,times=R)}
+}
+)
+    try(vvW<-vW[seq(burnin,R,jump)])
+    try(vvH<- vH[seq(burnin,R,jump)])
+    if(is.double(vvW))
+    if(sum(vvW)!=0){
+    old  =  options(digits=5)
+    ace1<- (1-sum(c1)/length(c1))
+    ge1<-abs(geweke.diag(vvW)$z[1])
+    ge2<-abs(geweke.diag(vvH)$z[1])
+    prai4<-quantile(vvW, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    pras4<-quantile(vvW, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    prli4<-quantile(vvH, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+    prls4<-quantile(vvH, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+    auxW4<-mean(vvW); auxH4<-mean(vvH); 
+    FM<- try(fisher(emvW,emvH))   
+    IVFM<-try(solve(n*FM))
+    vfW<-try(IVFM[1,1])
+    vfH<-try(IVFM[2,2])
+    cc<-qnorm(0.975,0,1)
+    iiW<-emvW-cc*(vfW^0.5)  ; isW<-emvW+cc*(vfW^0.5) ;   
+    iiH<-emvH-cc*(vfH^0.5)  ; isH<-emvH+cc*(vfH^0.5) ;
+ if (ace1>=0.1 & ace1<=0.7 & auxH4<lim & auxW4<lim & ge1<1.96  & ge2<1.96 &  vfH>0  & vfW>0) {
+o<-(o+1); 
+emv[o,1] <- emvW; emv[o,2]<-emvH;
+emcmc1[o,1] <- auxW1; emcmc1[o,2]<-auxH1;
+emcmc2[o,1] <- auxW2; emcmc2[o,2]<-auxH2;
+emcmc3[o,1] <- auxW3; emcmc3[o,2]<-auxH3; 
+emcmc4[o,1] <- auxW4; emcmc4[o,2]<-auxH4; 
+        {
+       if(iiW<=pW & isW>= pW) pc1[o]<-1
+       if(iiH<=pH & isH>= pH) pc2[o]<-1 
+       if(prai1<=pW & pras1>= pW) pb11[o]<-1
+       if(prli1<=pH & prls1>= pH) pb12[o]<-1   
+       if(prai2<=pW & pras2>= pW) pb21[o]<-1
+       if(prli2<=pH & prls2>= pH) pb22[o]<-1 
+       if(prai3<=pW & pras3>= pW) pb31[o]<-1
+       if(prli3<=pH & prls3>= pH) pb32[o]<-1   
+       if(prai4<=pW & pras4>= pW) pb41[o]<-1
+       if(prli4<=pH & prls4>= pH) pb42[o]<-1      
+       };
+}
+} } } } } } } 
+
+ite<-ite+1
+
+} 
+
+mediabayes1<-c((sum(emcmc1[,1]-pW)/B),(sum((emcmc1[,1]-pW)^2)/B),(sum(emcmc1[,2]-pH)/B),(sum((emcmc1[,2]-pH)^2)/B))
+mediabayes2<-c((sum(emcmc2[,1]-pW)/B),(sum((emcmc2[,1]-pW)^2)/B),(sum(emcmc2[,2]-pH)/B),(sum((emcmc2[,2]-pH)^2)/B))
+mediabayes3<-c((sum(emcmc3[,1]-pW)/B),(sum((emcmc3[,1]-pW)^2)/B),(sum(emcmc3[,2]-pH)/B),(sum((emcmc3[,2]-pH)^2)/B))
+mediabayes4<-c((sum(emcmc4[,1]-pW)/B),(sum((emcmc4[,1]-pW)^2)/B),(sum(emcmc4[,2]-pH)/B),(sum((emcmc4[,2]-pH)^2)/B))
+mediaemv<-c((sum(emv[,1]-pW)/B),(sum((emv[,1]-pW)^2)/B),(sum(emv[,2]-pH)/B),(sum((emv[,2]-pH)^2)/B))
+
+
+mreW<-c(mediaemv[1],mediabayes1[1],mediabayes2[1],mediabayes3[1],mediabayes4[1])
+mseW<-c(mediaemv[2],mediabayes1[2],mediabayes2[2],mediabayes3[2],mediabayes4[2])
+cobW<-c(round(sum(pc1)/B,3),round(sum(pb11)/B,3),round(sum(pb21)/B,3),round(sum(pb31)/B,3),round(sum(pb41)/B,3))
+
+mreH<-c(mediaemv[3],mediabayes1[3],mediabayes2[3],mediabayes3[3],mediabayes4[3])
+mseH<-c(mediaemv[4],mediabayes1[4],mediabayes2[4],mediabayes3[4],mediabayes4[4])
+cobH<-c(round(sum(pc2)/B,3),round(sum(pb12)/B,3),round(sum(pb22)/B,3),round(sum(pb32)/B,3),round(sum(pb42)/B,3))
+
+
+
+return(list(
+             mreW=mreW ,
+             mseW=mseW ,
+             cobW=cobW ,
+             mreH=mreH ,
+             mseH=mseH ,   
+             cobH=cobH
+)) 
+
+}
+
+
+
+number_of_cores <- 6
+clusters <- parallel::makeCluster(number_of_cores)
+doParallel::registerDoParallel(clusters)
+registerDoParallel(cores=6)
+estimates<-foreach(k = 1:NN,  .multicombine=TRUE,
+.packages = c("coda","MASS")) %dopar% 
+FF(k) 
+
+
+mreW <- matrix(nrow=NN,ncol=5)
+mseW <- matrix(nrow=NN,ncol=5)
+cobW <- matrix(nrow=NN,ncol=5)
+mreH <- matrix(nrow=NN,ncol=5)
+mseH <- matrix(nrow=NN,ncol=5)
+cobH <- matrix(nrow=NN,ncol=5)
+ 
+for( i in 1: NN) {
+mreW[i,]<-estimates[[i]]$mreW
+mseW[i,]<-estimates[[i]]$mseW
+cobW[i,]<-estimates[[i]]$cobW
+
+mreH[i,]<-estimates[[i]]$mreH
+mseH[i,]<-estimates[[i]]$mseH
+cobH[i,]<-estimates[[i]]$cobH
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+save.image("simu1.RData")
+

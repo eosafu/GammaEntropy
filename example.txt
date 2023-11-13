@@ -1,0 +1,67 @@
+#The code in R necessary to obtain the posterior mean of $H$ using the matching prior is given by:
+
+
+library(coda)
+###########################################################################
+### Gibbs with Metropolis-Hasting algorithm ###
+### R: Iteration Number; burn: Burn in; jump: Jump size; b= Control generation values ###
+### posteriorW and posteriorH: logarithm of posterior densities ###
+###########################################################################
+
+MCMC<-function(t,R,burn,jump,cW=1,seH=0.2) {
+posteriorW <- function (W) {
+p<-lgamma(n*W)-n*lgamma(W) +0.5*log(W*trigamma(W)-1)-0.5*log(W)+(W)*sum(log(t))-(n*W)*log(sum(t))
+return(p) }   
+posteriorH <- function (H,W) {
+delta<-exp(W+lgamma(W)+(1-W)*digamma(W)-H)
+p<-n*W*log(delta)-delta*sum(t)
+return(p) }          
+n<-length(t)
+vH<-length(R+1); vW<-length(R+1)
+beta<-(1/(n*(n-1)))*(n*sum((t)*log(t))-sum(t)*sum(log(t)))
+vW[1]<-(n-2.9)/(((n*sum((t)*log(t))/sum(t))-sum(log(t))))
+vH[1]<-vW[1]-log(beta)+lgamma(vW[1])+(1-vW[1])*digamma(vW[1]) 
+c1<-rep(0,times=R) ; i<-1
+while (i<=R) {
+prop1<-rgamma(1,shape=cW*vW[i],rate=cW)
+d1<-dgamma(vW[i],shape=cW*prop1,rate=cW,log=TRUE)-dgamma(prop1,shape=cW*vW[i],rate=cW,log=TRUE)
+ratio1<-posteriorW(prop1)-posteriorW(vW[i])+d1
+has<-min(1,exp(ratio1)); u1<-runif(1)
+if (is.finite(has)) {
+if (u1<has) {vW[i+1]<-prop1} else {vW[i+1]<-vW[i]}} else {vW[i+1]<-vW[i]}
+prop2<- rnorm(1,vH[i],seH)
+d2<-dnorm(vH[i], mean=prop2, sd=seH, log = TRUE)-dnorm(prop2, mean=vH[i], sd=seH, log = TRUE)
+ratio2<-posteriorH(prop2,vW[i+1])-posteriorH(vH[i],vW[i+1]) +d2
+has<-min(1,exp(ratio2)); u2<-runif(1)
+if (u2<has & is.double(has)) {vH[i+1]<-prop2 ; c1[i]<-0} else {vH[i+1]<-vH[i] ; c1[i]<-1}
+i<-i+1 }
+vvH<- vH[seq(burn,R,jump)]; H<-mean(vvH)
+ge1<-abs(geweke.diag(vvH)$z[1])
+prli<-quantile(vvH, probs = 0.025, na.rm = FALSE,names = FALSE,type = 7)
+prls<-quantile(vvH, probs = 0.975, na.rm = FALSE,names = FALSE,type = 7)
+return(list(acep=(1-sum(c1)/length(c1)),H=H, LCI_H=prli, UCI_H=prls, Geweke.statistics=ge1))
+}
+
+################################################################
+## Example ###
+palpha<-2; pbeta=0.5; n=50 #Parameters
+t<-rgamma(n, palpha, rate=pbeta) ### data vector 
+
+#Calling the function 
+MCMC(t,R=2000,burn=500,jump=5)
+
+#Output in R
+$acep          ##Aceptance rate
+[1] 0.4795
+
+$H        ##Posterior mean of H
+[1] 4.880441
+
+$LCI_H    ##Lower credibility interval of H
+[1] 1.880321
+
+$UCI_H   ##Upper credibility interval of H
+[1] 2.32128
+
+$Geweke.statistics ## Geweke Statitics
+1.054945
